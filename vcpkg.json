@@ -1,0 +1,14 @@
+{
+  "name": "cpct",
+  "version": "1.0.0",
+  "dependencies": [
+    "minizip-ng",
+    "libarchive",
+    "zstd",
+    "bzip2",
+    "liblzma",
+    "fmt",
+    "cxxopts",
+    "gtest"
+  ]
+}

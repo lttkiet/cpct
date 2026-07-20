@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  create:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            triplet: x64-linux
+            arch: x64
+            plat: linux
+            exe: ''
+          - os: ubuntu-latest
+            triplet: arm64-linux
+            arch: arm64
+            plat: linux
+            exe: ''
+            cross: aarch64-linux-gnu
+          - os: windows-latest
+            triplet: x64-windows
+            arch: x64
+            plat: windows
+            exe: .exe
+          - os: windows-latest
+            triplet: arm64-windows
+            arch: arm64
+            plat: windows
+            exe: .exe
+            cmake-arch: -A ARM64
+
+    runs-on: ${{ matrix.os }}
+    env:
+      CC: ${{ matrix.cross && format('{0}-gcc', matrix.cross) || '' }}
+      CXX: ${{ matrix.cross && format('{0}-g++', matrix.cross) || '' }}
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install cross-compiler (Linux arm64)
+        if: matrix.cross
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++-${{ matrix.cross }}
+
+      - name: Setup vcpkg
+        uses: johnwason/vcpkg-action@v8
+        id: vcpkg
+        with:
+          manifest-dir: ${{ github.workspace }}
+          triplet: ${{ matrix.triplet }}
+          cache-key: vcpkg-${{ matrix.triplet }}-${{ matrix.cross || 'native' }}-${{ hashFiles('vcpkg.json') }}
+          token: ${{ github.token }}
+
+      - name: Configure CMake
+        run: cmake -B build ${{ steps.vcpkg.outputs.vcpkg-cmake-config }} -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} ${{ matrix.cmake-arch }}
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }}
+
+      - name: Run tests (native x64)
+        if: matrix.arch == 'x64'
+        run: ctest --test-dir build -C ${{ env.BUILD_TYPE }} --output-on-failure
+
+      - name: Install
+        run: cmake --install build --config ${{ env.BUILD_TYPE }} --prefix dist
+
+      - name: Strip (Linux)
+        if: runner.os == 'Linux'
+        run: ${{ matrix.cross && format('{0}-strip', matrix.cross) || 'strip' }} dist/bin/cpct
+
+      - name: Rename binary
+        shell: bash
+        run: cp dist/bin/cpct${{ matrix.exe }} "cpct-${{ github.ref_name }}-${{ matrix.plat }}-${{ matrix.arch }}${{ matrix.exe }}"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ${{ github.ref_name }}
+          body: |
+            ## cpct ${{ github.ref_name }}
+
+            Cross-Platform Compressed Tool — CLI for ZIP, TAR, GZIP, BZIP2, XZ, ZSTD, 7z, RAR.
+
+            | Platform | Arch | Binary |
+            |---|---|---|
+            | Linux | x64 | `cpct-${{ github.ref_name }}-linux-x64` |
+            | Linux | arm64 | `cpct-${{ github.ref_name }}-linux-arm64` |
+            | Windows | x64 | `cpct-${{ github.ref_name }}-windows-x64.exe` |
+            | Windows | arm64 | `cpct-${{ github.ref_name }}-windows-arm64.exe` |
+
+            ### Usage
+            ```bash
+            cpct a archive.zip file1.txt file2.txt
+            cpct x archive.tar.gz -o output/
+            cpct l archive.7z
+            ```
+
+            ### Build from source
+            ```bash
+            export VCPKG_ROOT=/path/to/vcpkg
+            cmake --preset release
+            cmake --build --preset release
+            ```
+            All dependencies are handled automatically by vcpkg.
+          files: |
+            cpct-${{ github.ref_name }}-${{ matrix.plat }}-${{ matrix.arch }}${{ matrix.exe }}
+          generate_release_notes: true

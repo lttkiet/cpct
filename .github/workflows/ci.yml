@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, '**']
+    paths-ignore:
+      - '*.md'
+      - 'LICENSE'
+      - '.gitattributes'
+      - 'NOTICE'
+  pull_request:
+    branches: [main, master]
+    paths-ignore:
+      - '*.md'
+      - 'LICENSE'
+      - '.gitattributes'
+      - 'NOTICE'
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_TYPE: Debug
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            triplet: x64-linux
+            arch: x64
+          - os: ubuntu-latest
+            triplet: arm64-linux
+            arch: arm64
+            cross: aarch64-linux-gnu
+          - os: windows-latest
+            triplet: x64-windows
+            arch: x64
+          - os: windows-latest
+            triplet: arm64-windows
+            arch: arm64
+            cmake-arch: -A ARM64
+
+    runs-on: ${{ matrix.os }}
+    env:
+      CC: ${{ matrix.cross && format('{0}-gcc', matrix.cross) || '' }}
+      CXX: ${{ matrix.cross && format('{0}-g++', matrix.cross) || '' }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install cross-compiler (Linux arm64)
+        if: matrix.cross
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++-${{ matrix.cross }} qemu-user-static
+
+      - name: Setup vcpkg
+        uses: johnwason/vcpkg-action@v8
+        id: vcpkg
+        with:
+          manifest-dir: ${{ github.workspace }}
+          triplet: ${{ matrix.triplet }}
+          cache-key: vcpkg-${{ matrix.triplet }}-${{ matrix.cross || 'native' }}-${{ hashFiles('vcpkg.json') }}
+          token: ${{ github.token }}
+
+      - name: Configure CMake
+        run: cmake -B build ${{ steps.vcpkg.outputs.vcpkg-cmake-config }} -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} ${{ matrix.cmake-arch }}
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }}
+
+      - name: Run tests (native)
+        if: matrix.arch == 'x64'
+        run: ctest --test-dir build -C ${{ env.BUILD_TYPE }} --output-on-failure
+
+      - name: Run tests (QEMU arm64)
+        if: matrix.cross
+        run: qemu-aarch64-static -L /usr/${{ matrix.cross }} build/tests/cpct-test
+
+      - name: Build Release
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        run: |
+          cmake -B build-rel ${{ steps.vcpkg.outputs.vcpkg-cmake-config }} -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake-arch }}
+          cmake --build build-rel --config Release
+          cmake --install build-rel --config Release --prefix dist
+
+      - name: Upload artifact
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@v7
+        with:
+          name: cpct-${{ runner.os }}-${{ matrix.arch }}
+          path: dist/bin/

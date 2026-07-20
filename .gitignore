@@ -1,0 +1,9 @@
+build*/
+.vs/
+.vscode/
+*.user
+*.suo
+CMakeUserPresets.json
+vcpkg_installed/
+vcpkg-manifest-install.log
+vcpkg-bootstrap.log
